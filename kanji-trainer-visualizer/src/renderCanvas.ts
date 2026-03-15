@@ -722,6 +722,10 @@ export function renderValidationPanel(
 
 	let focusAnim: Animation | null = null;
 	let focusRaf: number | null = null;
+	let focusLastTime = 0;
+
+	const TARGET_FPS = 24;
+	const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
 	const stopFocusAnimation = (): void => {
 		if (focusAnim !== null) {
@@ -733,12 +737,15 @@ export function renderValidationPanel(
 			focusRaf = null;
 		}
 	};
-	const runFocusAnimation = (): void => {
+	const runFocusAnimation = (time: number): void => {
 		if (!angleFocus && !metricFocus && !isEndSummaryActive()) {
 			stopFocusAnimation();
 			return;
 		}
-		renderFromPhase();
+		if (time - focusLastTime >= FRAME_INTERVAL) {
+			renderFromPhase();
+			focusLastTime = time;
+		}
 		focusRaf = requestAnimationFrame(runFocusAnimation);
 	};
 	const ensureFocusAnimation = (): void => {
@@ -752,6 +759,7 @@ export function renderValidationPanel(
 				{ duration: 1000, iterations: Infinity }
 			);
 			if (focusRaf === null) {
+				focusLastTime = performance.now();
 				focusRaf = requestAnimationFrame(runFocusAnimation);
 			}
 		}
@@ -868,9 +876,11 @@ export function renderValidationPanel(
 
 	let drawAnim: Animation | null = null;
 	let drawRaf: number | null = null;
+	let drawLastTime = 0;
 
 	let morphAnim: Animation | null = null;
 	let morphRaf: number | null = null;
+	let morphLastTime = 0;
 
 	const stopMorphPlayback = (): void => {
 		if (morphAnim) {
@@ -926,19 +936,25 @@ export function renderValidationPanel(
 		);
 
 		drawAnim.currentTime = currentProgress * totalDuration;
+		drawLastTime = performance.now();
 
-		const tick = () => {
+		const tick = (time: number) => {
 			if (!drawAnim) return;
-			const effect = drawAnim.effect as KeyframeEffect | null;
-			if (effect) {
-				const timing = effect.getComputedTiming();
-				const p = timing.progress;
-				if (p !== null && p !== undefined) {
-					state.phase = p * strokeCount;
-					if (activeMode === "draw") {
-						renderFromPhase();
+
+			const timeSinceLastFrame = time - drawLastTime;
+			if (timeSinceLastFrame >= FRAME_INTERVAL) {
+				const effect = drawAnim.effect as KeyframeEffect | null;
+				if (effect) {
+					const timing = effect.getComputedTiming();
+					const p = timing.progress;
+					if (p !== null && p !== undefined) {
+						state.phase = p * strokeCount;
+						if (activeMode === "draw") {
+							renderFromPhase();
+						}
 					}
 				}
+				drawLastTime = time;
 			}
 
 			if (drawAnim.playState === 'running') {
@@ -968,20 +984,27 @@ export function renderValidationPanel(
 		);
 
 		morphAnim.currentTime = morphState.phase * morphCycleDurationMs;
+		morphLastTime = performance.now();
 
-		const tick = () => {
+		const tick = (time: number) => {
 			if (!morphAnim) return;
-			const effect = morphAnim.effect as KeyframeEffect | null;
-			if (effect) {
-				const timing = effect.getComputedTiming();
-				const p = timing.progress;
-				if (p !== null && p !== undefined) {
-					morphState.phase = p;
-					if (activeMode === "morph") {
-						renderMorphProgress();
+
+			const timeSinceLastFrame = time - morphLastTime;
+			if (timeSinceLastFrame >= FRAME_INTERVAL) {
+				const effect = morphAnim.effect as KeyframeEffect | null;
+				if (effect) {
+					const timing = effect.getComputedTiming();
+					const p = timing.progress;
+					if (p !== null && p !== undefined) {
+						morphState.phase = p;
+						if (activeMode === "morph") {
+							renderMorphProgress();
+						}
 					}
 				}
+				morphLastTime = time;
 			}
+
 			if (morphAnim.playState === 'running') {
 				morphRaf = requestAnimationFrame(tick);
 			} else if (morphAnim.playState === 'finished') {
