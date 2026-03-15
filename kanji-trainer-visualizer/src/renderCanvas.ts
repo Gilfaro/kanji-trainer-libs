@@ -1,4 +1,3 @@
-import { animate } from "animejs";
 import type { AffineTransform, Kanji, OverlayValidationData, Point, Stroke } from "./types";
 import { strokeColor } from "./palette";
 import { createMorphPlan, sampleMorphFrame } from "./morph";
@@ -721,11 +720,17 @@ export function renderValidationPanel(
 		return true;
 	};
 
-	let focusAnimation: any = null;
+	let focusAnim: Animation | null = null;
+	let focusRaf: number | null = null;
+
 	const stopFocusAnimation = (): void => {
-		if (focusAnimation !== null) {
-			focusAnimation.pause();
-			focusAnimation = null;
+		if (focusAnim !== null) {
+			focusAnim.cancel();
+			focusAnim = null;
+		}
+		if (focusRaf !== null) {
+			cancelAnimationFrame(focusRaf);
+			focusRaf = null;
 		}
 	};
 	const runFocusAnimation = (): void => {
@@ -734,18 +739,21 @@ export function renderValidationPanel(
 			return;
 		}
 		renderFromPhase();
+		focusRaf = requestAnimationFrame(runFocusAnimation);
 	};
 	const ensureFocusAnimation = (): void => {
 		if (!angleFocus && !metricFocus && !isEndSummaryActive()) {
 			stopFocusAnimation();
 			return;
 		}
-		if (focusAnimation === null) {
-			focusAnimation = animate(canvas, {
-				duration: 1000,
-				loop: true,
-				update: runFocusAnimation,
-			});
+		if (focusAnim === null) {
+			focusAnim = canvas.animate(
+				{ opacity: [1, 1] },
+				{ duration: 1000, iterations: Infinity }
+			);
+			if (focusRaf === null) {
+				focusRaf = requestAnimationFrame(runFocusAnimation);
+			}
 		}
 	};
 	const renderFromPhase = (): void => {
@@ -858,17 +866,30 @@ export function renderValidationPanel(
 		options?.onMorphProgress?.(clamped);
 	};
 
-	let drawAnim: any = null;
-	let morphAnim: any = null;
+	let drawAnim: Animation | null = null;
+	let drawRaf: number | null = null;
+
+	let morphAnim: Animation | null = null;
+	let morphRaf: number | null = null;
 
 	const stopMorphPlayback = (): void => {
 		if (morphAnim) {
-			morphAnim.pause();
+			morphAnim.cancel();
+			morphAnim = null;
+		}
+		if (morphRaf !== null) {
+			cancelAnimationFrame(morphRaf);
+			morphRaf = null;
 		}
 	};
 	const stopDrawLoopPlayback = (): void => {
 		if (drawAnim) {
-			drawAnim.pause();
+			drawAnim.cancel();
+			drawAnim = null;
+		}
+		if (drawRaf !== null) {
+			cancelAnimationFrame(drawRaf);
+			drawRaf = null;
 		}
 	};
 
@@ -890,40 +911,85 @@ export function renderValidationPanel(
 
 	const startDrawPlayback = () => {
 		stopDrawLoopPlayback();
+		if (totalDuration <= 0) return;
 
-		drawAnim = animate(state, {
-			phase: strokeCount,
-			duration: totalDuration * (1 - state.phase / Math.max(1, strokeCount)),
-			ease: "linear",
-			loop: drawLoopEnabled ? true : false,
-			playbackRate: 1,
-			update: () => {
-				if (activeMode === "draw") {
-					renderFromPhase();
+		const currentProgress = strokeCount > 0 ? (state.phase / strokeCount) : 0;
+		const durationRemaining = totalDuration * (1 - currentProgress);
+
+		drawAnim = canvas.animate(
+			{ opacity: [1, 1] },
+			{
+				duration: totalDuration,
+				iterations: drawLoopEnabled ? Infinity : 1,
+				direction: drawLoopEnabled ? "alternate" : "normal"
+			}
+		);
+
+		drawAnim.currentTime = currentProgress * totalDuration;
+
+		const tick = () => {
+			if (!drawAnim) return;
+			const effect = drawAnim.effect as KeyframeEffect | null;
+			if (effect) {
+				const timing = effect.getComputedTiming();
+				const p = timing.progress;
+				if (p !== null && p !== undefined) {
+					state.phase = p * strokeCount;
+					if (activeMode === "draw") {
+						renderFromPhase();
+					}
 				}
-			},
-			complete: () => {
+			}
+
+			if (drawAnim.playState === 'running') {
+				drawRaf = requestAnimationFrame(tick);
+			} else if (drawAnim.playState === 'finished') {
 				if (activeMode === "draw") {
+					state.phase = strokeCount;
 					renderFromPhase();
 					ensureFocusAnimation();
 				}
 			}
-		});
+		};
+		drawRaf = requestAnimationFrame(tick);
 	};
 
 	const startMorphPlayback = () => {
 		stopMorphPlayback();
+		if (morphCycleDurationMs <= 0) return;
 
-		morphAnim = animate(morphState, {
-			phase: [morphState.phase, 1],
-			duration: morphCycleDurationMs * (1 - morphState.phase),
-			ease: "linear",
-			alternate: morphLoopEnabled,
-			loop: morphLoopEnabled ? true : false,
-			update: () => {
+		morphAnim = canvas.animate(
+			{ opacity: [1, 1] },
+			{
+				duration: morphCycleDurationMs,
+				iterations: morphLoopEnabled ? Infinity : 1,
+				direction: morphLoopEnabled ? "alternate" : "normal"
+			}
+		);
+
+		morphAnim.currentTime = morphState.phase * morphCycleDurationMs;
+
+		const tick = () => {
+			if (!morphAnim) return;
+			const effect = morphAnim.effect as KeyframeEffect | null;
+			if (effect) {
+				const timing = effect.getComputedTiming();
+				const p = timing.progress;
+				if (p !== null && p !== undefined) {
+					morphState.phase = p;
+					if (activeMode === "morph") {
+						renderMorphProgress();
+					}
+				}
+			}
+			if (morphAnim.playState === 'running') {
+				morphRaf = requestAnimationFrame(tick);
+			} else if (morphAnim.playState === 'finished') {
+				morphState.phase = 1;
 				renderMorphProgress();
 			}
-		});
+		};
+		morphRaf = requestAnimationFrame(tick);
 	};
 
 	renderFromPhase();
@@ -936,14 +1002,18 @@ export function renderValidationPanel(
 			startDrawPlayback();
 		},
 		pauseDraw: () => {
-			stopDrawLoopPlayback();
+			if (drawAnim) drawAnim.pause();
+			if (drawRaf !== null) {
+				cancelAnimationFrame(drawRaf);
+				drawRaf = null;
+			}
 		},
 		toggleDrawLoop: () => {
 			setDrawLoopEnabled(!drawLoopEnabled);
 			if (drawAnim) {
-				const isPlaying = !drawAnim.paused;
+				const wasRunning = drawAnim.playState === 'running';
 				startDrawPlayback();
-				if (!isPlaying) drawAnim.pause();
+				if (!wasRunning && drawAnim) drawAnim.pause();
 			}
 			return drawLoopEnabled;
 		},
@@ -967,15 +1037,19 @@ export function renderValidationPanel(
 			startMorphPlayback();
 		},
 		pauseMorph: () => {
-			stopMorphPlayback();
+			if (morphAnim) morphAnim.pause();
+			if (morphRaf !== null) {
+				cancelAnimationFrame(morphRaf);
+				morphRaf = null;
+			}
 		},
 		toggleMorphLoop: () => {
 			const next = !morphLoopEnabled;
 			setMorphLoopEnabled(next);
 			if (morphAnim) {
-				const isPlaying = !morphAnim.paused;
+				const wasRunning = morphAnim.playState === 'running';
 				startMorphPlayback();
-				if (!isPlaying) morphAnim.pause();
+				if (!wasRunning && morphAnim) morphAnim.pause();
 			} else if (activeMode === "morph") {
 				renderMorphProgress();
 			}
