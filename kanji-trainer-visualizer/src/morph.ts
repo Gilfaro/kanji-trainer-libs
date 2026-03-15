@@ -12,6 +12,7 @@ export interface MorphFrameStroke {
 export interface MorphFrame {
 	strokes: MorphFrameStroke[];
 	isComplete: boolean;
+	activeStrokes: number;
 }
 
 export interface MorphPlan {
@@ -24,6 +25,7 @@ export interface MorphPlan {
 	pairs: StrokePairPlan[];
 	extraUser: Array<{ stroke: Stroke; strokeIndex: number }>;
 	missingReference: Array<{ stroke: Stroke; strokeIndex: number }>;
+	preallocatedFrame: MorphFrame;
 }
 
 interface LocalPoint {
@@ -43,10 +45,7 @@ interface StrokePairPlan {
 	referenceAngle: number;
 	userLength: number;
 	referenceLength: number;
-}
-
-function lerp(a: number, b: number, t: number): number {
-	return a + (b - a) * t;
+	morphedStroke: Stroke;
 }
 
 function avgPoint(points: Point[]): Point {
@@ -62,23 +61,10 @@ function avgPoint(points: Point[]): Point {
 	return { x: x / points.length, y: y / points.length };
 }
 
-function rotate(p: LocalPoint, angle: number): LocalPoint {
-	const c = Math.cos(angle);
-	const s = Math.sin(angle);
-	return {
-		x: p.x * c - p.y * s,
-		y: p.x * s + p.y * c,
-	};
-}
-
 function shortestAngleDelta(from: number, to: number): number {
 	let delta = to - from;
-	while (delta > Math.PI) {
-		delta -= Math.PI * 2;
-	}
-	while (delta < -Math.PI) {
-		delta += Math.PI * 2;
-	}
+	while (delta > Math.PI) delta -= Math.PI * 2;
+	while (delta < -Math.PI) delta += Math.PI * 2;
 	return delta;
 }
 
@@ -141,8 +127,8 @@ function resampleStroke(stroke: Stroke, count: number): Point[] {
 		const b = src[bIdx]!;
 		const ratio = l1 - l0 <= EPS ? 0 : (target - l0) / (l1 - l0);
 		out.push({
-			x: lerp(a.x, b.x, ratio),
-			y: lerp(a.y, b.y, ratio),
+			x: a.x + (b.x - a.x) * ratio,
+			y: a.y + (b.y - a.y) * ratio,
 		});
 	}
 	return out;
@@ -158,9 +144,7 @@ function strokeLength(points: Point[]): number {
 	const a = points[0]!;
 	const b = points[points.length - 1]!;
 	const endToEnd = Math.hypot(b.x - a.x, b.y - a.y);
-	if (endToEnd > EPS) {
-		return endToEnd;
-	}
+	if (endToEnd > EPS) return endToEnd;
 	const path = polylineLength(points);
 	return path > EPS ? path : 1;
 }
@@ -190,6 +174,8 @@ function buildPairPlan(strokeIndex: number, userStroke: Stroke, referenceStroke:
 	const userLength = strokeLength(userSamples);
 	const referenceLength = strokeLength(referenceSamples);
 
+	const preAllocatedPoints = Array.from({ length: RESAMPLE_POINTS }, () => ({ x: 0, y: 0 }));
+
 	return {
 		strokeIndex,
 		userRaw: ensureStroke(userStroke),
@@ -202,33 +188,39 @@ function buildPairPlan(strokeIndex: number, userStroke: Stroke, referenceStroke:
 		referenceAngle,
 		userLength,
 		referenceLength,
+		morphedStroke: { points: preAllocatedPoints, label_pos: null },
 	};
 }
 
 function buildMorphedStroke(pair: StrokePairPlan, t: number): Stroke {
 	const angle = pair.userAngle + shortestAngleDelta(pair.userAngle, pair.referenceAngle) * t;
-	const length = lerp(pair.userLength, pair.referenceLength, t);
-	const center: Point = {
-		x: lerp(pair.userCenter.x, pair.referenceCenter.x, t),
-		y: lerp(pair.userCenter.y, pair.referenceCenter.y, t),
-	};
+	const length = pair.userLength + (pair.referenceLength - pair.userLength) * t;
+	const cx = pair.userCenter.x + (pair.referenceCenter.x - pair.userCenter.x) * t;
+	const cy = pair.userCenter.y + (pair.referenceCenter.y - pair.userCenter.y) * t;
 
-	const points: Point[] = [];
-	for (let i = 0; i < pair.userLocal.length; i += 1) {
-		const ul = pair.userLocal[i]!;
-		const rl = pair.referenceLocal[i]!;
-		const local: LocalPoint = {
-			x: lerp(ul.x, rl.x, t),
-			y: lerp(ul.y, rl.y, t),
-		};
-		const rotated = rotate(local, angle);
-		points.push({
-			x: center.x + rotated.x * length,
-			y: center.y + rotated.y * length,
-		});
+	const c = Math.cos(angle);
+	const s = Math.sin(angle);
+
+	const points = pair.morphedStroke.points;
+	const userLocal = pair.userLocal;
+	const referenceLocal = pair.referenceLocal;
+
+	for (let i = 0; i < userLocal.length; i += 1) {
+		const ul = userLocal[i]!;
+		const rl = referenceLocal[i]!;
+
+		const lx = ul.x + (rl.x - ul.x) * t;
+		const ly = ul.y + (rl.y - ul.y) * t;
+
+		const rotatedX = lx * c - ly * s;
+		const rotatedY = lx * s + ly * c;
+
+		const pt = points[i]!;
+		pt.x = cx + rotatedX * length;
+		pt.y = cy + rotatedY * length;
 	}
 
-	return { points, label_pos: null };
+	return pair.morphedStroke;
 }
 
 export function createMorphPlan(
@@ -255,6 +247,17 @@ export function createMorphPlan(
 	}
 
 	const totalDurationMs = removeDurationMs + morphDurationMs + addDurationMs;
+	const maxStrokes = pairCount + extraUser.length + missingReference.length;
+	const preallocatedFrame: MorphFrame = {
+		strokes: Array.from({ length: maxStrokes }, () => ({
+			stroke: { points: [], label_pos: null },
+			strokeIndex: 0,
+			alpha: 0
+		})),
+		isComplete: false,
+		activeStrokes: 0,
+	};
+
 	return {
 		reference,
 		user,
@@ -265,12 +268,14 @@ export function createMorphPlan(
 		pairs,
 		extraUser,
 		missingReference,
+		preallocatedFrame,
 	};
 }
 
 export function sampleMorphFrame(plan: MorphPlan, elapsedMs: number): MorphFrame {
 	const t = Math.max(0, Math.min(plan.totalDurationMs, elapsedMs));
-	const out: MorphFrameStroke[] = [];
+	const frame = plan.preallocatedFrame;
+	let idx = 0;
 
 	const removeEnd = plan.removeDurationMs;
 	const morphEnd = removeEnd + plan.morphDurationMs;
@@ -278,41 +283,49 @@ export function sampleMorphFrame(plan: MorphPlan, elapsedMs: number): MorphFrame
 	if (t <= removeEnd) {
 		const removeT = removeEnd <= EPS ? 1 : t / removeEnd;
 		for (const pair of plan.pairs) {
-			out.push({ stroke: pair.userRaw, strokeIndex: pair.strokeIndex, alpha: 1 });
+			const s = frame.strokes[idx++]!;
+			s.stroke = pair.userRaw;
+			s.strokeIndex = pair.strokeIndex;
+			s.alpha = 1;
 		}
 		for (const extra of plan.extraUser) {
-			out.push({ stroke: extra.stroke, strokeIndex: extra.strokeIndex, alpha: 1 - removeT });
+			const s = frame.strokes[idx++]!;
+			s.stroke = extra.stroke;
+			s.strokeIndex = extra.strokeIndex;
+			s.alpha = 1 - removeT;
 		}
-		return {
-			strokes: out,
-			isComplete: false,
-		};
+		frame.activeStrokes = idx;
+		frame.isComplete = false;
+		return frame;
 	}
 
 	if (t <= morphEnd) {
 		const morphT = plan.morphDurationMs <= EPS ? 1 : (t - removeEnd) / plan.morphDurationMs;
 		for (const pair of plan.pairs) {
-			out.push({
-				stroke: buildMorphedStroke(pair, morphT),
-				strokeIndex: pair.strokeIndex,
-				alpha: 1,
-			});
+			const s = frame.strokes[idx++]!;
+			s.stroke = buildMorphedStroke(pair, morphT);
+			s.strokeIndex = pair.strokeIndex;
+			s.alpha = 1;
 		}
-		return {
-			strokes: out,
-			isComplete: false,
-		};
+		frame.activeStrokes = idx;
+		frame.isComplete = false;
+		return frame;
 	}
 
 	const addT = plan.addDurationMs <= EPS ? 1 : (t - morphEnd) / plan.addDurationMs;
 	for (const pair of plan.pairs) {
-		out.push({ stroke: pair.referenceRaw, strokeIndex: pair.strokeIndex, alpha: 1 });
+		const s = frame.strokes[idx++]!;
+		s.stroke = pair.referenceRaw;
+		s.strokeIndex = pair.strokeIndex;
+		s.alpha = 1;
 	}
 	for (const miss of plan.missingReference) {
-		out.push({ stroke: miss.stroke, strokeIndex: miss.strokeIndex, alpha: addT });
+		const s = frame.strokes[idx++]!;
+		s.stroke = miss.stroke;
+		s.strokeIndex = miss.strokeIndex;
+		s.alpha = addT;
 	}
-	return {
-		strokes: out,
-		isComplete: t >= plan.totalDurationMs - EPS,
-	};
+	frame.activeStrokes = idx;
+	frame.isComplete = t >= plan.totalDurationMs - EPS;
+	return frame;
 }
