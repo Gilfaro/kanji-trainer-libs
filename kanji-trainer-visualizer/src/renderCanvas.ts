@@ -494,6 +494,8 @@ function normalizeKanjiToCanvas(
 function drawAnimationFrame(
 	ctx: CanvasRenderingContext2D,
 	canvas: HTMLCanvasElement,
+	leftPanel: PanelRect,
+	rightPanel: PanelRect,
 	reference: Kanji,
 	user: Kanji,
 	progressByStroke: number[],
@@ -501,22 +503,10 @@ function drawAnimationFrame(
 	metricFocus: MetricFocus | null,
 	metricBadByType: Record<MetricFocus, Set<number>>,
 	endSummaryActive: boolean,
+	combinedBad: Set<number>,
 	angleIssuesForSummary: AngleIssueFocus[],
 	theme: CanvasTheme,
 ): void {
-	const leftPanel: PanelRect = {
-		x: 0,
-		y: 0,
-		width: (canvas.width - PANEL_GAP) / 2,
-		height: canvas.height,
-	};
-	const rightPanel: PanelRect = {
-		x: leftPanel.width + PANEL_GAP,
-		y: 0,
-		width: (canvas.width - PANEL_GAP) / 2,
-		height: canvas.height,
-	};
-
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
 	drawPanel(ctx, leftPanel, theme);
 	drawPanel(ctx, rightPanel, theme);
@@ -548,11 +538,6 @@ function drawAnimationFrame(
 	}
 
 	if (endSummaryActive) {
-		const combinedBad = new Set<number>([
-			...metricBadByType.dtw,
-			...metricBadByType.rms,
-			...metricBadByType.position,
-		]);
 		drawStrokeGlowOverlay(ctx, reference, user, combinedBad);
 		if (angleIssuesForSummary.length > 0) {
 			const issueDurationSec = 1.05;
@@ -568,6 +553,80 @@ function drawAnimationFrame(
 				false,
 			);
 		}
+	}
+}
+
+class Animator {
+	playing = false;
+	startTime = 0;
+	startProgress = 0;
+	duration = 0;
+	loop = false;
+	alternate = false;
+	raf: number | null = null;
+	lastTime = 0;
+	onUpdate: (progress: number) => void = () => {};
+	onComplete: () => void = () => {};
+
+	start(duration: number, loop: boolean, alternate: boolean, startProgress: number, frameInterval: number) {
+		this.stop();
+		this.duration = duration;
+		this.loop = loop;
+		this.alternate = alternate;
+		this.startProgress = startProgress;
+		this.startTime = performance.now();
+		this.lastTime = this.startTime;
+		this.playing = true;
+
+		const tick = (time: number) => {
+			if (!this.playing) return;
+			const timeSinceLastFrame = time - this.lastTime;
+			if (timeSinceLastFrame >= frameInterval) {
+				const elapsed = time - this.startTime;
+				let p = this.startProgress + (elapsed / this.duration);
+				let finished = false;
+
+				if (p >= 1) {
+					if (this.loop) {
+						if (this.alternate) {
+							const cycles = Math.floor(p);
+							const remainder = p - cycles;
+							p = cycles % 2 === 1 ? 1 - remainder : remainder;
+						} else {
+							p = p % 1;
+						}
+					} else {
+						p = 1;
+						finished = true;
+					}
+				}
+
+				this.onUpdate(p);
+				this.lastTime = time - (timeSinceLastFrame % frameInterval);
+
+				if (finished) {
+					this.playing = false;
+					this.onComplete();
+					return;
+				}
+			}
+			if (this.playing) {
+				this.raf = requestAnimationFrame(tick);
+			}
+		};
+		this.raf = requestAnimationFrame(tick);
+	}
+
+	stop() {
+		this.playing = false;
+		if (this.raf !== null) {
+			cancelAnimationFrame(this.raf);
+			this.raf = null;
+		}
+	}
+
+	pause() {
+		this.stop();
 	}
 }
 
@@ -638,6 +697,7 @@ export function renderValidationPanel(
 		width: (canvas.width - PANEL_GAP) / 2,
 		height: canvas.height,
 	};
+
 	const referenceFitted = normalizeKanjiToCanvas(referenceAligned, bounds, leftPanel);
 	const referenceFittedRight = normalizeKanjiToCanvas(referenceAligned, bounds, rightPanel);
 	const userFitted = normalizeKanjiToCanvas(userAligned, bounds, rightPanel);
@@ -645,6 +705,7 @@ export function renderValidationPanel(
 	const strokeCount = Math.max(referenceFitted.strokes.length, userFitted.strokes.length);
 	const progressByStroke = Array.from({ length: strokeCount }, () => 0);
 	const totalDuration = Math.max(strokeCount, 1) * STROKE_DURATION_MS;
+
 	let angleFocus: AngleIssueFocus | null = null;
 	let metricFocus: MetricFocus | null = null;
 	const metricBadByType: Record<MetricFocus, Set<number>> = {
@@ -652,6 +713,7 @@ export function renderValidationPanel(
 		rms: new Set<number>(),
 		position: new Set<number>(),
 	};
+
 	const dtwThreshold = result.thresholds?.dtw;
 	const rmsThreshold = result.thresholds?.rms;
 	const positionThreshold = result.thresholds?.position;
@@ -670,6 +732,13 @@ export function renderValidationPanel(
 			metricBadByType.position.add(i);
 		}
 	}
+
+	const combinedBad = new Set<number>([
+		...metricBadByType.dtw,
+		...metricBadByType.rms,
+		...metricBadByType.position,
+	]);
+
 	const relativeAngleThreshold = result.thresholds?.relative_angle;
 	const angleIssuesForSummary: AngleIssueFocus[] = [];
 	for (const item of result.composition.angle_details ?? []) {
@@ -685,42 +754,23 @@ export function renderValidationPanel(
 		});
 	}
 
-	drawAnimationFrame(
-		ctx,
-		canvas,
-		referenceFitted,
-		userFitted,
-		progressByStroke,
-		angleFocus,
-		metricFocus,
-		metricBadByType,
-		false,
-		angleIssuesForSummary,
-		theme,
-	);
-
 	const state = { phase: 0 };
 	const morphState = { phase: 0 };
 	let activeMode: "draw" | "morph" = "draw";
 	let overallMode = false;
+
 	const setOverallMode = (active: boolean): void => {
-		if (overallMode === active) {
-			return;
-		}
+		if (overallMode === active) return;
 		overallMode = active;
 		options?.onOverallModeChange?.(active);
 	};
+
 	const isEndSummaryActive = (): boolean => {
-		if (!overallMode) {
-			return false;
-		}
-		if (angleFocus || metricFocus) {
-			return false;
-		}
+		if (!overallMode) return false;
+		if (angleFocus || metricFocus) return false;
 		return true;
 	};
 
-	let focusAnim: Animation | null = null;
 	let focusRaf: number | null = null;
 	let focusLastTime = 0;
 
@@ -728,15 +778,12 @@ export function renderValidationPanel(
 	const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
 	const stopFocusAnimation = (): void => {
-		if (focusAnim !== null) {
-			focusAnim.cancel();
-			focusAnim = null;
-		}
 		if (focusRaf !== null) {
 			cancelAnimationFrame(focusRaf);
 			focusRaf = null;
 		}
 	};
+
 	const runFocusAnimation = (time: number): void => {
 		if (!angleFocus && !metricFocus && !isEndSummaryActive()) {
 			stopFocusAnimation();
@@ -744,26 +791,22 @@ export function renderValidationPanel(
 		}
 		if (time - focusLastTime >= FRAME_INTERVAL) {
 			renderFromPhase();
-			focusLastTime = time;
+			focusLastTime = time - ((time - focusLastTime) % FRAME_INTERVAL);
 		}
 		focusRaf = requestAnimationFrame(runFocusAnimation);
 	};
+
 	const ensureFocusAnimation = (): void => {
 		if (!angleFocus && !metricFocus && !isEndSummaryActive()) {
 			stopFocusAnimation();
 			return;
 		}
-		if (focusAnim === null) {
-			focusAnim = canvas.animate(
-				{ opacity: [1, 1] },
-				{ duration: 1000, iterations: Infinity }
-			);
-			if (focusRaf === null) {
-				focusLastTime = performance.now();
-				focusRaf = requestAnimationFrame(runFocusAnimation);
-			}
+		if (focusRaf === null) {
+			focusLastTime = performance.now();
+			focusRaf = requestAnimationFrame(runFocusAnimation);
 		}
 	};
+
 	const renderFromPhase = (): void => {
 		for (let i = 0; i < strokeCount; i += 1) {
 			const p = state.phase - i;
@@ -775,6 +818,8 @@ export function renderValidationPanel(
 		drawAnimationFrame(
 			ctx,
 			canvas,
+			leftPanel,
+			rightPanel,
 			referenceFitted,
 			userFitted,
 			progressByStroke,
@@ -782,6 +827,7 @@ export function renderValidationPanel(
 			metricFocus,
 			metricBadByType,
 			isEndSummaryActive(),
+			combinedBad,
 			angleIssuesForSummary,
 			theme,
 		);
@@ -789,11 +835,14 @@ export function renderValidationPanel(
 		options?.onDrawProgress?.(progress);
 		options?.onStrokeIndexChange?.(activeStrokeIndex);
 	};
+
 	const renderFocusedDrawView = (): void => {
 		const fullProgress = Array.from({ length: strokeCount }, () => 1);
 		drawAnimationFrame(
 			ctx,
 			canvas,
+			leftPanel,
+			rightPanel,
 			referenceFitted,
 			userFitted,
 			fullProgress,
@@ -801,31 +850,20 @@ export function renderValidationPanel(
 			metricFocus,
 			metricBadByType,
 			false,
+			combinedBad,
 			angleIssuesForSummary,
 			theme,
 		);
 	};
+
 	const morphCycleDurationMs = morphPlan.totalDurationMs;
 
 	const drawMorphFrameAtCycle = (cycle: number): void => {
 		const frame = sampleMorphFrame(morphPlan, cycle);
 
-		const leftPanelMorph: PanelRect = {
-			x: 0,
-			y: 0,
-			width: (canvas.width - PANEL_GAP) / 2,
-			height: canvas.height,
-		};
-		const rightPanelMorph: PanelRect = {
-			x: leftPanelMorph.width + PANEL_GAP,
-			y: 0,
-			width: (canvas.width - PANEL_GAP) / 2,
-			height: canvas.height,
-		};
-
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
-		drawPanel(ctx, leftPanelMorph, theme);
-		drawPanel(ctx, rightPanelMorph, theme);
+		drawPanel(ctx, leftPanel, theme);
+		drawPanel(ctx, rightPanel, theme);
 
 		for (let i = 0; i < referenceFitted.strokes.length; i += 1) {
 			const refStroke = referenceFitted.strokes[i];
@@ -851,18 +889,14 @@ export function renderValidationPanel(
 
 	let drawLoopEnabled = false;
 	const setDrawLoopEnabled = (active: boolean): void => {
-		if (drawLoopEnabled === active) {
-			return;
-		}
+		if (drawLoopEnabled === active) return;
 		drawLoopEnabled = active;
 		options?.onDrawLoopChange?.(active);
 	};
 
 	let morphLoopEnabled = false;
 	const setMorphLoopEnabled = (active: boolean): void => {
-		if (morphLoopEnabled === active) {
-			return;
-		}
+		if (morphLoopEnabled === active) return;
 		morphLoopEnabled = active;
 		options?.onMorphLoopChange?.(active);
 	};
@@ -874,33 +908,34 @@ export function renderValidationPanel(
 		options?.onMorphProgress?.(clamped);
 	};
 
-	let drawAnim: Animation | null = null;
-	let drawRaf: number | null = null;
-	let drawLastTime = 0;
-
-	let morphAnim: Animation | null = null;
-	let morphRaf: number | null = null;
-	let morphLastTime = 0;
-
-	const stopMorphPlayback = (): void => {
-		if (morphAnim) {
-			morphAnim.cancel();
-			morphAnim = null;
-		}
-		if (morphRaf !== null) {
-			cancelAnimationFrame(morphRaf);
-			morphRaf = null;
+	const drawAnimator = new Animator();
+	drawAnimator.onUpdate = (p) => {
+		state.phase = p * strokeCount;
+		if (activeMode === "draw") renderFromPhase();
+	};
+	drawAnimator.onComplete = () => {
+		if (activeMode === "draw") {
+			state.phase = strokeCount;
+			renderFromPhase();
+			ensureFocusAnimation();
 		}
 	};
+
+	const morphAnimator = new Animator();
+	morphAnimator.onUpdate = (p) => {
+		morphState.phase = p;
+		if (activeMode === "morph") renderMorphProgress();
+	};
+	morphAnimator.onComplete = () => {
+		morphState.phase = 1;
+		renderMorphProgress();
+	};
+
+	const stopMorphPlayback = (): void => {
+		morphAnimator.stop();
+	};
 	const stopDrawLoopPlayback = (): void => {
-		if (drawAnim) {
-			drawAnim.cancel();
-			drawAnim = null;
-		}
-		if (drawRaf !== null) {
-			cancelAnimationFrame(drawRaf);
-			drawRaf = null;
-		}
+		drawAnimator.stop();
 	};
 
 	const deactivateMorphMode = (): void => {
@@ -922,97 +957,14 @@ export function renderValidationPanel(
 	const startDrawPlayback = () => {
 		stopDrawLoopPlayback();
 		if (totalDuration <= 0) return;
-
 		const currentProgress = strokeCount > 0 ? (state.phase / strokeCount) : 0;
-		const durationRemaining = totalDuration * (1 - currentProgress);
-
-		drawAnim = canvas.animate(
-			{ opacity: [1, 1] },
-			{
-				duration: totalDuration,
-				iterations: drawLoopEnabled ? Infinity : 1,
-				direction: drawLoopEnabled ? "alternate" : "normal"
-			}
-		);
-
-		drawAnim.currentTime = currentProgress * totalDuration;
-		drawLastTime = performance.now();
-
-		const tick = (time: number) => {
-			if (!drawAnim) return;
-
-			const timeSinceLastFrame = time - drawLastTime;
-			if (timeSinceLastFrame >= FRAME_INTERVAL) {
-				const effect = drawAnim.effect as KeyframeEffect | null;
-				if (effect) {
-					const timing = effect.getComputedTiming();
-					const p = timing.progress;
-					if (p !== null && p !== undefined) {
-						state.phase = p * strokeCount;
-						if (activeMode === "draw") {
-							renderFromPhase();
-						}
-					}
-				}
-				drawLastTime = time;
-			}
-
-			if (drawAnim.playState === 'running') {
-				drawRaf = requestAnimationFrame(tick);
-			} else if (drawAnim.playState === 'finished') {
-				if (activeMode === "draw") {
-					state.phase = strokeCount;
-					renderFromPhase();
-					ensureFocusAnimation();
-				}
-			}
-		};
-		drawRaf = requestAnimationFrame(tick);
+		drawAnimator.start(totalDuration, drawLoopEnabled, drawLoopEnabled, currentProgress, FRAME_INTERVAL);
 	};
 
 	const startMorphPlayback = () => {
 		stopMorphPlayback();
 		if (morphCycleDurationMs <= 0) return;
-
-		morphAnim = canvas.animate(
-			{ opacity: [1, 1] },
-			{
-				duration: morphCycleDurationMs,
-				iterations: morphLoopEnabled ? Infinity : 1,
-				direction: morphLoopEnabled ? "alternate" : "normal"
-			}
-		);
-
-		morphAnim.currentTime = morphState.phase * morphCycleDurationMs;
-		morphLastTime = performance.now();
-
-		const tick = (time: number) => {
-			if (!morphAnim) return;
-
-			const timeSinceLastFrame = time - morphLastTime;
-			if (timeSinceLastFrame >= FRAME_INTERVAL) {
-				const effect = morphAnim.effect as KeyframeEffect | null;
-				if (effect) {
-					const timing = effect.getComputedTiming();
-					const p = timing.progress;
-					if (p !== null && p !== undefined) {
-						morphState.phase = p;
-						if (activeMode === "morph") {
-							renderMorphProgress();
-						}
-					}
-				}
-				morphLastTime = time;
-			}
-
-			if (morphAnim.playState === 'running') {
-				morphRaf = requestAnimationFrame(tick);
-			} else if (morphAnim.playState === 'finished') {
-				morphState.phase = 1;
-				renderMorphProgress();
-			}
-		};
-		morphRaf = requestAnimationFrame(tick);
+		morphAnimator.start(morphCycleDurationMs, morphLoopEnabled, morphLoopEnabled, morphState.phase, FRAME_INTERVAL);
 	};
 
 	renderFromPhase();
@@ -1025,19 +977,13 @@ export function renderValidationPanel(
 			startDrawPlayback();
 		},
 		pauseDraw: () => {
-			if (drawAnim) drawAnim.pause();
-			if (drawRaf !== null) {
-				cancelAnimationFrame(drawRaf);
-				drawRaf = null;
-			}
+			drawAnimator.pause();
 		},
 		toggleDrawLoop: () => {
 			setDrawLoopEnabled(!drawLoopEnabled);
-			if (drawAnim) {
-				const wasRunning = drawAnim.playState === 'running';
-				startDrawPlayback();
-				if (!wasRunning && drawAnim) drawAnim.pause();
-			}
+			const wasRunning = drawAnimator.playing;
+			startDrawPlayback();
+			if (!wasRunning) drawAnimator.pause();
 			return drawLoopEnabled;
 		},
 		setDrawProgress: (progress01: number) => {
@@ -1060,22 +1006,15 @@ export function renderValidationPanel(
 			startMorphPlayback();
 		},
 		pauseMorph: () => {
-			if (morphAnim) morphAnim.pause();
-			if (morphRaf !== null) {
-				cancelAnimationFrame(morphRaf);
-				morphRaf = null;
-			}
+			morphAnimator.pause();
 		},
 		toggleMorphLoop: () => {
 			const next = !morphLoopEnabled;
 			setMorphLoopEnabled(next);
-			if (morphAnim) {
-				const wasRunning = morphAnim.playState === 'running';
-				startMorphPlayback();
-				if (!wasRunning && morphAnim) morphAnim.pause();
-			} else if (activeMode === "morph") {
-				renderMorphProgress();
-			}
+			const wasRunning = morphAnimator.playing;
+			startMorphPlayback();
+			if (!wasRunning) morphAnimator.pause();
+			else if (activeMode === "morph" && !wasRunning) renderMorphProgress();
 			return morphLoopEnabled;
 		},
 		setMorphProgress: (progress01: number) => {
