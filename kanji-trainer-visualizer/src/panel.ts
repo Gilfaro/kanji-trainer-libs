@@ -506,10 +506,7 @@ export function createValidationGuiPanel(
 		const updateMarker = (): void => {
 			const value = Number(input.value);
 			const ratio = Number.isFinite(value) ? Math.max(0, Math.min(1, value / 1000)) : 0;
-			const minX = SCRUBBER_THUMB_RADIUS;
-			const maxX = Math.max(scrubberWrap.clientWidth - SCRUBBER_THUMB_RADIUS, minX);
-			const x = minX + (maxX - minX) * ratio;
-			marker.style.left = `${x}px`;
+			marker.style.left = `calc(${SCRUBBER_THUMB_RADIUS}px + ${ratio} * (100% - ${SCRUBBER_THUMB_RADIUS * 2}px))`;
 		};
 
 		const setLoopState = (active: boolean): void => {

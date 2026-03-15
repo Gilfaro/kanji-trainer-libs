@@ -160,6 +160,7 @@ function drawPartialStroke(
 	progress: number,
 	strokeIndex: number,
 	lineWidth: number,
+	totalLength: number,
 ): void {
 	if (stroke.points.length < 2 || progress <= 0) {
 		return;
@@ -179,12 +180,6 @@ function drawPartialStroke(
 		return;
 	}
 
-	let totalLength = 0;
-	for (let i = 1; i < stroke.points.length; i += 1) {
-		const a = stroke.points[i - 1]!;
-		const b = stroke.points[i]!;
-		totalLength += Math.hypot(b.x - a.x, b.y - a.y);
-	}
 	if (totalLength <= 0) {
 		return;
 	}
@@ -237,6 +232,27 @@ function drawFullStroke(
 	ctx.stroke();
 }
 
+function buildStrokePath(stroke: Stroke): Path2D | null {
+	if (stroke.points.length < 2) return null;
+	const path = new Path2D();
+	path.moveTo(stroke.points[0]!.x, stroke.points[0]!.y);
+	for (let i = 1; i < stroke.points.length; i += 1) {
+		const point = stroke.points[i]!;
+		path.lineTo(point.x, point.y);
+	}
+	return path;
+}
+
+function getStrokeLength(stroke: Stroke): number {
+	let totalLength = 0;
+	for (let i = 1; i < stroke.points.length; i += 1) {
+		const a = stroke.points[i - 1]!;
+		const b = stroke.points[i]!;
+		totalLength += Math.hypot(b.x - a.x, b.y - a.y);
+	}
+	return totalLength;
+}
+
 function pointFromStroke(stroke: Stroke | undefined, pointType: "Start" | "End" | undefined): Point | null {
 	if (!stroke || stroke.points.length === 0) {
 		return null;
@@ -276,12 +292,16 @@ function drawAngleFocusOnPanels(
 			const c = strokeColor(index);
 			const refStroke = referenceLeft.strokes[index];
 			const usrStroke = userRight.strokes[index];
+			const refPath = refStroke ? buildStrokePath(refStroke) : null;
+			const usrPath = usrStroke ? buildStrokePath(usrStroke) : null;
+
+			ctx.strokeStyle = c;
 
 			for (let i = 0; i < 3; i++) {
-				const currentWidth = baseWidth + (i * blurSpread * 0.33);
+				ctx.lineWidth = baseWidth + (i * blurSpread * 0.33);
 				ctx.globalAlpha = 0.5 / (i + 1.2);
-				if (refStroke) drawFullStroke(ctx, refStroke, c, currentWidth);
-				if (usrStroke) drawFullStroke(ctx, usrStroke, c, currentWidth);
+				if (refPath) ctx.stroke(refPath);
+				if (usrPath) ctx.stroke(usrPath);
 			}
 		}
 		ctx.restore();
@@ -377,12 +397,16 @@ function drawMetricFocusOverlay(
 		const glowColor = strokeColor(index);
 		const refStroke = reference.strokes[index];
 		const userStroke = user.strokes[index];
+		const refPath = refStroke ? buildStrokePath(refStroke) : null;
+		const userPath = userStroke ? buildStrokePath(userStroke) : null;
+
+		ctx.strokeStyle = glowColor;
 
 		for (let i = 0; i < 3; i++) {
-			const currentWidth = baseWidth + (i * blurSpread * 0.33);
+			ctx.lineWidth = baseWidth + (i * blurSpread * 0.33);
 			ctx.globalAlpha = 0.5 / (i + 1.2);
-			if (refStroke) drawFullStroke(ctx, refStroke, glowColor, currentWidth);
-			if (userStroke) drawFullStroke(ctx, userStroke, glowColor, currentWidth);
+			if (refPath) ctx.stroke(refPath);
+			if (userPath) ctx.stroke(userPath);
 		}
 	}
 	ctx.restore();
@@ -427,12 +451,16 @@ function drawStrokeGlowOverlay(
 		const glowColor = strokeColor(index);
 		const refStroke = reference.strokes[index];
 		const userStroke = user.strokes[index];
+		const refPath = refStroke ? buildStrokePath(refStroke) : null;
+		const userPath = userStroke ? buildStrokePath(userStroke) : null;
+
+		ctx.strokeStyle = glowColor;
 
 		for (let i = 0; i < 3; i++) {
-			const currentWidth = baseWidth + (i * blurSpread * 0.33);
+			ctx.lineWidth = baseWidth + (i * blurSpread * 0.33);
 			ctx.globalAlpha = 0.5 / (i + 1.2);
-			if (refStroke) drawFullStroke(ctx, refStroke, glowColor, currentWidth);
-			if (userStroke) drawFullStroke(ctx, userStroke, glowColor, currentWidth);
+			if (refPath) ctx.stroke(refPath);
+			if (userPath) ctx.stroke(userPath);
 		}
 	}
 	ctx.restore();
@@ -486,6 +514,8 @@ function drawAnimationFrame(
 	combinedBad: Set<number>,
 	angleIssuesForSummary: AngleIssueFocus[],
 	theme: CanvasTheme,
+	referenceLengths: number[],
+	userLengths: number[],
 ): void {
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
 	ctx.lineCap = "round";
@@ -499,10 +529,10 @@ function drawAnimationFrame(
 		const referenceStroke = reference.strokes[i];
 		const userStroke = user.strokes[i];
 		if (referenceStroke) {
-			drawPartialStroke(ctx, referenceStroke, progress, i, REFERENCE_WIDTH);
+			drawPartialStroke(ctx, referenceStroke, progress, i, REFERENCE_WIDTH, referenceLengths[i] ?? 0);
 		}
 		if (userStroke) {
-			drawPartialStroke(ctx, userStroke, progress, i, USER_WIDTH);
+			drawPartialStroke(ctx, userStroke, progress, i, USER_WIDTH, userLengths[i] ?? 0);
 		}
 	}
 
@@ -683,6 +713,10 @@ export function renderValidationPanel(
 	const referenceFitted = normalizeKanjiToCanvas(referenceAligned, bounds, leftPanel);
 	const referenceFittedRight = normalizeKanjiToCanvas(referenceAligned, bounds, rightPanel);
 	const userFitted = normalizeKanjiToCanvas(userAligned, bounds, rightPanel);
+
+	const referenceLengths = referenceFitted.strokes.map(getStrokeLength);
+	const userLengths = userFitted.strokes.map(getStrokeLength);
+
 	const morphPlan = createMorphPlan(referenceFittedRight, userFitted);
 	const strokeCount = Math.max(referenceFitted.strokes.length, userFitted.strokes.length);
 	const progressByStroke = Array.from({ length: strokeCount }, () => 0);
@@ -812,6 +846,8 @@ export function renderValidationPanel(
 			combinedBad,
 			angleIssuesForSummary,
 			theme,
+			referenceLengths,
+			userLengths,
 		);
 		const progress = strokeCount > 0 ? Math.max(0, Math.min(1, state.phase / strokeCount)) : 0;
 		options?.onDrawProgress?.(progress);
@@ -835,6 +871,8 @@ export function renderValidationPanel(
 			combinedBad,
 			angleIssuesForSummary,
 			theme,
+			referenceLengths,
+			userLengths,
 		);
 	};
 
