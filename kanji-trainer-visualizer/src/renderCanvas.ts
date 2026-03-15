@@ -1,4 +1,4 @@
-import { createTimer } from "animejs";
+import { animate } from "animejs";
 import type { AffineTransform, Kanji, OverlayValidationData, Point, Stroke } from "./types";
 import { strokeColor } from "./palette";
 import { createMorphPlan, sampleMorphFrame } from "./morph";
@@ -252,61 +252,6 @@ function pointFromStroke(stroke: Stroke | undefined, pointType: "Start" | "End" 
 	return stroke.points[0] ?? null;
 }
 
-function drawAngleFocusOverlay(
-	ctx: CanvasRenderingContext2D,
-	reference: Kanji,
-	user: Kanji,
-	focus: AngleIssueFocus,
-): void {
-	const [a, b] = focus.strokeIndices;
-	const pa = focus.pointTypes?.[0];
-	const pb = focus.pointTypes?.[1];
-
-	const refA = pointFromStroke(reference.strokes[a], pa);
-	const refB = pointFromStroke(reference.strokes[b], pb);
-	const usrA = pointFromStroke(user.strokes[a], pa);
-	const usrB = pointFromStroke(user.strokes[b], pb);
-	if (!refA || !refB || !usrA || !usrB) {
-		return;
-	}
-
-	ctx.save();
-	ctx.setLineDash([5, 5]);
-	ctx.lineWidth = 2;
-	ctx.strokeStyle = "rgba(80, 80, 80, 0.45)";
-	ctx.beginPath();
-	ctx.moveTo(refA.x, refA.y);
-	ctx.lineTo(refB.x, refB.y);
-	ctx.stroke();
-
-	ctx.setLineDash([]);
-	ctx.lineWidth = 3;
-	ctx.strokeStyle = "rgba(20, 20, 20, 0.75)";
-	ctx.beginPath();
-	ctx.moveTo(usrA.x, usrA.y);
-	ctx.lineTo(usrB.x, usrB.y);
-	ctx.stroke();
-
-	const pulse = 0.45 + 0.55 * Math.sin(performance.now() * 0.008);
-	const r = 4 + pulse * 2;
-	ctx.fillStyle = "rgba(20, 20, 20, 0.75)";
-	for (const p of [usrA, usrB]) {
-		ctx.beginPath();
-		ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-		ctx.fill();
-	}
-
-	ctx.lineWidth = 1.6;
-	ctx.strokeStyle = "rgba(80, 80, 80, 0.5)";
-	for (const [from, to] of [[refA, usrA], [refB, usrB]] as const) {
-		ctx.beginPath();
-		ctx.moveTo(from.x, from.y);
-		ctx.lineTo(to.x, to.y);
-		ctx.stroke();
-	}
-	ctx.restore();
-}
-
 function drawAngleFocusOnPanels(
 	ctx: CanvasRenderingContext2D,
 	referenceLeft: Kanji,
@@ -457,7 +402,6 @@ function drawMetricFocusOverlay(
 	}
 	ctx.restore();
 
-	// 2) Repaint original stroke colors on top, so glow is visible but colors stay canonical.
 	ctx.save();
 	ctx.globalCompositeOperation = "source-over";
 	ctx.lineCap = "round";
@@ -757,6 +701,7 @@ export function renderValidationPanel(
 	);
 
 	const state = { phase: 0 };
+	const morphState = { phase: 0 };
 	let activeMode: "draw" | "morph" = "draw";
 	let overallMode = false;
 	const setOverallMode = (active: boolean): void => {
@@ -775,11 +720,12 @@ export function renderValidationPanel(
 		}
 		return true;
 	};
-	let focusAnimationFrame: number | null = null;
+
+	let focusAnimation: any = null;
 	const stopFocusAnimation = (): void => {
-		if (focusAnimationFrame !== null) {
-			cancelAnimationFrame(focusAnimationFrame);
-			focusAnimationFrame = null;
+		if (focusAnimation !== null) {
+			focusAnimation.pause();
+			focusAnimation = null;
 		}
 	};
 	const runFocusAnimation = (): void => {
@@ -788,15 +734,18 @@ export function renderValidationPanel(
 			return;
 		}
 		renderFromPhase();
-		focusAnimationFrame = requestAnimationFrame(runFocusAnimation);
 	};
 	const ensureFocusAnimation = (): void => {
 		if (!angleFocus && !metricFocus && !isEndSummaryActive()) {
 			stopFocusAnimation();
 			return;
 		}
-		if (focusAnimationFrame === null) {
-			focusAnimationFrame = requestAnimationFrame(runFocusAnimation);
+		if (focusAnimation === null) {
+			focusAnimation = animate(canvas, {
+				duration: 1000,
+				loop: true,
+				update: runFocusAnimation,
+			});
 		}
 	};
 	const renderFromPhase = (): void => {
@@ -893,18 +842,7 @@ export function renderValidationPanel(
 		options?.onDrawLoopChange?.(active);
 	};
 
-	let morphProgress01 = 0;
 	let morphLoopEnabled = false;
-	let morphPlaying = false;
-	let morphAnimationFrame: number | null = null;
-	let morphPrevTs = 0;
-	let morphDirection: 1 | -1 = 1;
-
-	let drawLoopPlaying = false;
-	let drawLoopAnimationFrame: number | null = null;
-	let drawLoopPrevTs = 0;
-	let drawLoopDirection: 1 | -1 = 1;
-
 	const setMorphLoopEnabled = (active: boolean): void => {
 		if (morphLoopEnabled === active) {
 			return;
@@ -913,26 +851,25 @@ export function renderValidationPanel(
 		options?.onMorphLoopChange?.(active);
 	};
 
-	const stopMorphPlayback = (): void => {
-		morphPlaying = false;
-		if (morphAnimationFrame !== null) {
-			cancelAnimationFrame(morphAnimationFrame);
-			morphAnimationFrame = null;
-		}
-	};
-	const stopDrawLoopPlayback = (): void => {
-		drawLoopPlaying = false;
-		if (drawLoopAnimationFrame !== null) {
-			cancelAnimationFrame(drawLoopAnimationFrame);
-			drawLoopAnimationFrame = null;
-		}
-	};
-
 	const renderMorphProgress = (): void => {
-		const clamped = Math.max(0, Math.min(1, morphProgress01));
+		const clamped = Math.max(0, Math.min(1, morphState.phase));
 		const cycle = clamped * morphCycleDurationMs;
 		drawMorphFrameAtCycle(cycle);
 		options?.onMorphProgress?.(clamped);
+	};
+
+	let drawAnim: any = null;
+	let morphAnim: any = null;
+
+	const stopMorphPlayback = (): void => {
+		if (morphAnim) {
+			morphAnim.pause();
+		}
+	};
+	const stopDrawLoopPlayback = (): void => {
+		if (drawAnim) {
+			drawAnim.pause();
+		}
 	};
 
 	const deactivateMorphMode = (): void => {
@@ -945,93 +882,49 @@ export function renderValidationPanel(
 		stopDrawLoopPlayback();
 		setDrawLoopEnabled(false);
 		setOverallMode(false);
-		timer.pause();
 		stopFocusAnimation();
 		angleFocus = null;
 		metricFocus = null;
 		activeMode = "morph";
 	};
 
-	const morphStep = (ts: number): void => {
-		if (!morphPlaying) {
-			stopMorphPlayback();
-			return;
-		}
-		if (morphPrevTs <= 0) {
-			morphPrevTs = ts;
-		}
-		const dt = Math.max(0, ts - morphPrevTs);
-		morphPrevTs = ts;
-		if (morphCycleDurationMs > 0) {
-			let next = morphProgress01 + (dt / morphCycleDurationMs) * morphDirection;
-			if (next > 1) {
-				if (morphLoopEnabled) {
-					next = 1;
-					morphDirection = -1;
-				} else {
-					next = 1;
-					morphPlaying = false;
+	const startDrawPlayback = () => {
+		stopDrawLoopPlayback();
+
+		drawAnim = animate(state, {
+			phase: strokeCount,
+			duration: totalDuration * (1 - state.phase / Math.max(1, strokeCount)),
+			ease: "linear",
+			loop: drawLoopEnabled ? true : false,
+			playbackRate: 1,
+			update: () => {
+				if (activeMode === "draw") {
+					renderFromPhase();
 				}
-			} else if (next < 0) {
-				if (morphLoopEnabled) {
-					next = 0;
-					morphDirection = 1;
-				} else {
-					next = 0;
-					morphPlaying = false;
+			},
+			complete: () => {
+				if (activeMode === "draw") {
+					renderFromPhase();
+					ensureFocusAnimation();
 				}
 			}
-			morphProgress01 = next;
-		}
-		renderMorphProgress();
-		if (morphPlaying) {
-			morphAnimationFrame = requestAnimationFrame(morphStep);
-		} else {
-			stopMorphPlayback();
-		}
-	};
-	const drawLoopStep = (ts: number): void => {
-		if (!drawLoopPlaying) {
-			stopDrawLoopPlayback();
-			return;
-		}
-		if (drawLoopPrevTs <= 0) {
-			drawLoopPrevTs = ts;
-		}
-		const dt = Math.max(0, ts - drawLoopPrevTs);
-		drawLoopPrevTs = ts;
-		const deltaPhase = totalDuration > 0 ? (dt / totalDuration) * strokeCount : 0;
-		let next = state.phase + deltaPhase * drawLoopDirection;
-		if (next >= strokeCount) {
-			next = strokeCount;
-			drawLoopDirection = -1;
-		} else if (next <= 0) {
-			next = 0;
-			drawLoopDirection = 1;
-		}
-		state.phase = next;
-		renderFromPhase();
-		drawLoopAnimationFrame = requestAnimationFrame(drawLoopStep);
+		});
 	};
 
-	const timer = createTimer({
-		autoplay: false,
-		duration: totalDuration,
-		onUpdate: (self) => {
-			const ratio = totalDuration > 0 ? self.currentTime / totalDuration : 0;
-			state.phase = ratio * strokeCount;
-			if (activeMode === "draw") {
-				renderFromPhase();
+	const startMorphPlayback = () => {
+		stopMorphPlayback();
+
+		morphAnim = animate(morphState, {
+			phase: [morphState.phase, 1],
+			duration: morphCycleDurationMs * (1 - morphState.phase),
+			ease: "linear",
+			alternate: morphLoopEnabled,
+			loop: morphLoopEnabled ? true : false,
+			update: () => {
+				renderMorphProgress();
 			}
-		},
-		onComplete: () => {
-			if (activeMode !== "draw") {
-				return;
-			}
-			renderFromPhase();
-			ensureFocusAnimation();
-		},
-	});
+		});
+	};
 
 	renderFromPhase();
 
@@ -1039,31 +932,18 @@ export function renderValidationPanel(
 		playDraw: () => {
 			deactivateMorphMode();
 			setOverallMode(false);
-			if (drawLoopEnabled) {
-				timer.pause();
-				stopDrawLoopPlayback();
-				drawLoopPlaying = true;
-				drawLoopPrevTs = 0;
-				if (state.phase >= strokeCount) {
-					drawLoopDirection = -1;
-				} else if (state.phase <= 0) {
-					drawLoopDirection = 1;
-				}
-				drawLoopAnimationFrame = requestAnimationFrame(drawLoopStep);
-			} else {
-				stopDrawLoopPlayback();
-				timer.seek(totalDuration * Math.max(0, Math.min(1, strokeCount > 0 ? (state.phase / strokeCount) : 0)));
-				timer.play();
-			}
+			if (state.phase >= strokeCount) state.phase = 0;
+			startDrawPlayback();
 		},
 		pauseDraw: () => {
 			stopDrawLoopPlayback();
-			timer.pause();
 		},
 		toggleDrawLoop: () => {
 			setDrawLoopEnabled(!drawLoopEnabled);
-			if (!drawLoopEnabled) {
-				stopDrawLoopPlayback();
+			if (drawAnim) {
+				const isPlaying = !drawAnim.paused;
+				startDrawPlayback();
+				if (!isPlaying) drawAnim.pause();
 			}
 			return drawLoopEnabled;
 		},
@@ -1073,24 +953,18 @@ export function renderValidationPanel(
 			stopDrawLoopPlayback();
 			const clamped = Math.max(0, Math.min(1, progress01));
 			state.phase = clamped * strokeCount;
-			timer.pause();
-			timer.seek(totalDuration * clamped);
 			renderFromPhase();
 			ensureFocusAnimation();
 		},
 		getDrawProgress: () => {
-			const ratio = totalDuration > 0 ? timer.currentTime / totalDuration : 0;
-			return Math.max(0, Math.min(1, ratio));
+			return strokeCount > 0 ? Math.max(0, Math.min(1, state.phase / strokeCount)) : 0;
 		},
 		playMorph: () => {
 			activateMorphMode();
-			stopMorphPlayback();
 			angleFocus = null;
 			metricFocus = null;
-			renderMorphProgress();
-			morphPlaying = true;
-			morphPrevTs = 0;
-			morphAnimationFrame = requestAnimationFrame(morphStep);
+			if (morphState.phase >= 1 && !morphLoopEnabled) morphState.phase = 0;
+			startMorphPlayback();
 		},
 		pauseMorph: () => {
 			stopMorphPlayback();
@@ -1098,22 +972,22 @@ export function renderValidationPanel(
 		toggleMorphLoop: () => {
 			const next = !morphLoopEnabled;
 			setMorphLoopEnabled(next);
-			if (!next) {
-				stopMorphPlayback();
-				if (activeMode === "morph") {
-					renderMorphProgress();
-				}
+			if (morphAnim) {
+				const isPlaying = !morphAnim.paused;
+				startMorphPlayback();
+				if (!isPlaying) morphAnim.pause();
+			} else if (activeMode === "morph") {
+				renderMorphProgress();
 			}
 			return morphLoopEnabled;
 		},
 		setMorphProgress: (progress01: number) => {
 			activateMorphMode();
 			stopMorphPlayback();
-			morphProgress01 = Math.max(0, Math.min(1, progress01));
-			morphDirection = 1;
+			morphState.phase = Math.max(0, Math.min(1, progress01));
 			renderMorphProgress();
 		},
-		getMorphProgress: () => morphProgress01,
+		getMorphProgress: () => morphState.phase,
 		toggleOverallMode: () => {
 			if (activeMode === "morph") {
 				deactivateMorphMode();
@@ -1154,7 +1028,6 @@ export function renderValidationPanel(
 			stopMorphPlayback();
 			stopDrawLoopPlayback();
 			stopFocusAnimation();
-			timer.cancel();
 		},
 	};
 }
