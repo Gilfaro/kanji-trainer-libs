@@ -266,26 +266,22 @@ function drawAngleFocusOnPanels(
 
 	if (showStrokeHighlight) {
 		const glowPulse = 0.5 + 0.5 * Math.sin(animationTimeSec * 7.0);
-		const glowWidth = 6.2 + glowPulse * 2.8;
-		const glowBlur = 24 + glowPulse * 20;
+		const baseWidth = 6.2 + glowPulse * 2.8;
+		const baseBlur = 24 + glowPulse * 20;
 
 		ctx.save();
 		ctx.globalCompositeOperation = "source-over";
-		ctx.lineCap = "round";
-		ctx.lineJoin = "round";
-		ctx.globalAlpha = 0.52;
+
 		for (const index of [a, b]) {
 			const c = strokeColor(index);
-			ctx.shadowBlur = glowBlur;
-			ctx.shadowColor = c;
-			ctx.strokeStyle = c;
 			const refStroke = referenceLeft.strokes[index];
 			const usrStroke = userRight.strokes[index];
-			if (refStroke) {
-				drawFullStroke(ctx, refStroke, c, glowWidth);
-			}
-			if (usrStroke) {
-				drawFullStroke(ctx, usrStroke, c, glowWidth);
+
+			for (let i = 0; i < 4; i++) {
+				const currentWidth = baseWidth + (i * baseBlur * 0.25);
+				ctx.globalAlpha = 0.4 / (i + 1);
+				if (refStroke) drawFullStroke(ctx, refStroke, c, currentWidth);
+				if (usrStroke) drawFullStroke(ctx, usrStroke, c, currentWidth);
 			}
 		}
 		ctx.restore();
@@ -371,28 +367,22 @@ function drawMetricFocusOverlay(
 
 	const t = performance.now() / 1000;
 	const pulse = 0.5 + 0.5 * Math.sin(t * 7.0);
-	const width = 6.2 + pulse * 3.0;
-	const blur = 26 + pulse * 22;
+	const baseWidth = 6.2 + pulse * 3.0;
+	const baseBlur = 26 + pulse * 22;
 
 	ctx.save();
 	ctx.globalCompositeOperation = "source-over";
-	ctx.lineCap = "round";
-	ctx.lineJoin = "round";
-	ctx.globalAlpha = 0.56;
-	ctx.lineWidth = width;
 
 	for (const index of badIndices) {
 		const glowColor = strokeColor(index);
-		ctx.shadowBlur = blur;
-		ctx.shadowColor = glowColor;
-		ctx.strokeStyle = glowColor;
 		const refStroke = reference.strokes[index];
 		const userStroke = user.strokes[index];
-		if (refStroke) {
-			drawFullStroke(ctx, refStroke, glowColor, width);
-		}
-		if (userStroke) {
-			drawFullStroke(ctx, userStroke, glowColor, width);
+
+		for (let i = 0; i < 4; i++) {
+			const currentWidth = baseWidth + (i * baseBlur * 0.25);
+			ctx.globalAlpha = 0.4 / (i + 1);
+			if (refStroke) drawFullStroke(ctx, refStroke, glowColor, currentWidth);
+			if (userStroke) drawFullStroke(ctx, userStroke, glowColor, currentWidth);
 		}
 	}
 	ctx.restore();
@@ -427,28 +417,22 @@ function drawStrokeGlowOverlay(
 
 	const t = performance.now() / 1000;
 	const pulse = 0.5 + 0.5 * Math.sin(t * 7.0);
-	const width = 6.2 + pulse * 3.0;
-	const blur = 26 + pulse * 22;
+	const baseWidth = 6.2 + pulse * 3.0;
+	const baseBlur = 26 + pulse * 22;
 
 	ctx.save();
 	ctx.globalCompositeOperation = "source-over";
-	ctx.lineCap = "round";
-	ctx.lineJoin = "round";
-	ctx.globalAlpha = 0.56;
-	ctx.lineWidth = width;
 
 	for (const index of badIndices) {
 		const glowColor = strokeColor(index);
-		ctx.shadowBlur = blur;
-		ctx.shadowColor = glowColor;
-		ctx.strokeStyle = glowColor;
 		const refStroke = reference.strokes[index];
 		const userStroke = user.strokes[index];
-		if (refStroke) {
-			drawFullStroke(ctx, refStroke, glowColor, width);
-		}
-		if (userStroke) {
-			drawFullStroke(ctx, userStroke, glowColor, width);
+
+		for (let i = 0; i < 4; i++) {
+			const currentWidth = baseWidth + (i * baseBlur * 0.25);
+			ctx.globalAlpha = 0.4 / (i + 1);
+			if (refStroke) drawFullStroke(ctx, refStroke, glowColor, currentWidth);
+			if (userStroke) drawFullStroke(ctx, userStroke, glowColor, currentWidth);
 		}
 	}
 	ctx.restore();
