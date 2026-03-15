@@ -167,8 +167,6 @@ function drawPartialStroke(
 
 	ctx.strokeStyle = strokeColor(strokeIndex);
 	ctx.lineWidth = lineWidth;
-	ctx.lineCap = "round";
-	ctx.lineJoin = "round";
 
 	if (progress >= 1) {
 		ctx.beginPath();
@@ -230,8 +228,6 @@ function drawFullStroke(
 	}
 	ctx.strokeStyle = color;
 	ctx.lineWidth = lineWidth;
-	ctx.lineCap = "round";
-	ctx.lineJoin = "round";
 	ctx.beginPath();
 	ctx.moveTo(stroke.points[0]!.x, stroke.points[0]!.y);
 	for (let i = 1; i < stroke.points.length; i += 1) {
@@ -508,6 +504,8 @@ function drawAnimationFrame(
 	theme: CanvasTheme,
 ): void {
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	ctx.lineCap = "round";
+	ctx.lineJoin = "round";
 	drawPanel(ctx, leftPanel, theme);
 	drawPanel(ctx, rightPanel, theme);
 
@@ -862,6 +860,8 @@ export function renderValidationPanel(
 		const frame = sampleMorphFrame(morphPlan, cycle);
 
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
 		drawPanel(ctx, leftPanel, theme);
 		drawPanel(ctx, rightPanel, theme);
 
@@ -872,7 +872,8 @@ export function renderValidationPanel(
 			}
 		}
 
-		for (const s of frame.strokes) {
+		for (let i = 0; i < frame.activeStrokes; i += 1) {
+			const s = frame.strokes[i]!;
 			if (s.alpha <= 0) {
 				continue;
 			}
