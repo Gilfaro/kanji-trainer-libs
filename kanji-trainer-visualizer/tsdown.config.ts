@@ -9,4 +9,7 @@ export default defineConfig({
 	clean: true,
 	minify: true,
 	platform: "browser",
+	loader: {
+		".css": "text",
+	},
 });
